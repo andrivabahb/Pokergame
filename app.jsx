@@ -1,0 +1,483 @@
+import React, { useState, useEffect } from 'react';
+import { Users, Plus, LogIn, DollarSign } from 'lucide-react';
+
+const SUITS = ['♠', '♥', '♦', '♣'];
+const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+
+const PokerGame = () => {
+  const [screen, setScreen] = useState('home');
+  const [roomCode, setRoomCode] = useState('');
+  const [playerName, setPlayerName] = useState('');
+  const [playerId, setPlayerId] = useState('');
+  const [gameState, setGameState] = useState(null);
+  const [betAmount, setBetAmount] = useState(0);
+
+  useEffect(() => {
+    if (gameState) {
+      const interval = setInterval(loadGameState, 2000);
+      return () => clearInterval(interval);
+    }
+  }, [gameState, roomCode]);
+
+  const generateRoomCode = () => {
+    return Math.random().toString(36).substring(2, 8).toUpperCase();
+  };
+
+  const generateDeck = () => {
+    const deck = [];
+    for (let suit of SUITS) {
+      for (let rank of RANKS) {
+        deck.push({ suit, rank });
+      }
+    }
+    return deck.sort(() => Math.random() - 0.5);
+  };
+
+  const createRoom = async () => {
+    if (!playerName.trim()) {
+      alert('Masukkan nama Anda!');
+      return;
+    }
+    
+    const code = generateRoomCode();
+    const pid = `player_${Date.now()}`;
+    
+    const newGame = {
+      roomCode: code,
+      players: [{
+        id: pid,
+        name: playerName,
+        chips: 1000,
+        cards: [],
+        bet: 0,
+        folded: false,
+        isDealer: true
+      }],
+      deck: generateDeck(),
+      communityCards: [],
+      pot: 0,
+      currentTurn: 0,
+      gameStarted: false,
+      round: 'waiting'
+    };
+
+    try {
+      await window.storage.set(`poker_${code}`, JSON.stringify(newGame), true);
+      setRoomCode(code);
+      setPlayerId(pid);
+      setGameState(newGame);
+      setScreen('game');
+    } catch (error) {
+      alert('Gagal membuat room: ' + error.message);
+    }
+  };
+
+  const joinRoom = async () => {
+    if (!playerName.trim() || !roomCode.trim()) {
+      alert('Masukkan nama dan kode room!');
+      return;
+    }
+
+    try {
+      const result = await window.storage.get(`poker_${roomCode.toUpperCase()}`, true);
+      if (!result) {
+        alert('Room tidak ditemukan!');
+        return;
+      }
+
+      const game = JSON.parse(result.value);
+      
+      if (game.players.length >= 4) {
+        alert('Room sudah penuh!');
+        return;
+      }
+
+      if (game.gameStarted) {
+        alert('Game sudah dimulai!');
+        return;
+      }
+
+      const pid = `player_${Date.now()}`;
+      game.players.push({
+        id: pid,
+        name: playerName,
+        chips: 1000,
+        cards: [],
+        bet: 0,
+        folded: false,
+        isDealer: false
+      });
+
+      await window.storage.set(`poker_${roomCode.toUpperCase()}`, JSON.stringify(game), true);
+      setPlayerId(pid);
+      setGameState(game);
+      setScreen('game');
+    } catch (error) {
+      alert('Gagal join room: ' + error.message);
+    }
+  };
+
+  const loadGameState = async () => {
+    if (!roomCode) return;
+    
+    try {
+      const result = await window.storage.get(`poker_${roomCode}`, true);
+      if (result) {
+        setGameState(JSON.parse(result.value));
+      }
+    } catch (error) {
+      console.error('Error loading game state:', error);
+    }
+  };
+
+  const startGame = async () => {
+    if (!gameState || gameState.players.length < 2) {
+      alert('Minimal 2 pemain untuk mulai!');
+      return;
+    }
+
+    const deck = generateDeck();
+    const updatedPlayers = gameState.players.map(p => ({
+      ...p,
+      cards: [deck.pop(), deck.pop()],
+      bet: 0,
+      folded: false
+    }));
+
+    const newState = {
+      ...gameState,
+      players: updatedPlayers,
+      deck: deck,
+      communityCards: [],
+      pot: 0,
+      currentTurn: 0,
+      gameStarted: true,
+      round: 'preflop'
+    };
+
+    try {
+      await window.storage.set(`poker_${roomCode}`, JSON.stringify(newState), true);
+      setGameState(newState);
+    } catch (error) {
+      alert('Gagal memulai game: ' + error.message);
+    }
+  };
+
+  const performAction = async (action) => {
+    if (!gameState) return;
+
+    const currentPlayer = gameState.players[gameState.currentTurn];
+    if (currentPlayer.id !== playerId) {
+      alert('Bukan giliran Anda!');
+      return;
+    }
+
+    let updatedPlayers = [...gameState.players];
+    let updatedPot = gameState.pot;
+    let amount = 0;
+
+    if (action === 'fold') {
+      updatedPlayers[gameState.currentTurn].folded = true;
+    } else if (action === 'call') {
+      const maxBet = Math.max(...updatedPlayers.map(p => p.bet));
+      amount = maxBet - currentPlayer.bet;
+      updatedPlayers[gameState.currentTurn].bet += amount;
+      updatedPlayers[gameState.currentTurn].chips -= amount;
+      updatedPot += amount;
+    } else if (action === 'raise') {
+      const maxBet = Math.max(...updatedPlayers.map(p => p.bet));
+      amount = (maxBet - currentPlayer.bet) + betAmount;
+      if (amount > currentPlayer.chips) {
+        alert('Chips tidak cukup!');
+        return;
+      }
+      updatedPlayers[gameState.currentTurn].bet += amount;
+      updatedPlayers[gameState.currentTurn].chips -= amount;
+      updatedPot += amount;
+    } else if (action === 'check') {
+      // Do nothing
+    }
+
+    let nextTurn = (gameState.currentTurn + 1) % gameState.players.length;
+    while (updatedPlayers[nextTurn].folded && updatedPlayers.filter(p => !p.folded).length > 1) {
+      nextTurn = (nextTurn + 1) % gameState.players.length;
+    }
+
+    const activePlayers = updatedPlayers.filter(p => !p.folded);
+    const allBetsEqual = activePlayers.every(p => p.bet === activePlayers[0].bet);
+    
+    let newRound = gameState.round;
+    let newCommunityCards = [...gameState.communityCards];
+    let newDeck = [...gameState.deck];
+
+    if (allBetsEqual && nextTurn === 0) {
+      if (gameState.round === 'preflop') {
+        newCommunityCards = [newDeck.pop(), newDeck.pop(), newDeck.pop()];
+        newRound = 'flop';
+      } else if (gameState.round === 'flop') {
+        newCommunityCards.push(newDeck.pop());
+        newRound = 'turn';
+      } else if (gameState.round === 'turn') {
+        newCommunityCards.push(newDeck.pop());
+        newRound = 'river';
+      } else if (gameState.round === 'river') {
+        newRound = 'showdown';
+      }
+      
+      updatedPlayers = updatedPlayers.map(p => ({ ...p, bet: 0 }));
+    }
+
+    const newState = {
+      ...gameState,
+      players: updatedPlayers,
+      pot: updatedPot,
+      currentTurn: nextTurn,
+      round: newRound,
+      communityCards: newCommunityCards,
+      deck: newDeck
+    };
+
+    try {
+      await window.storage.set(`poker_${roomCode}`, JSON.stringify(newState), true);
+      setGameState(newState);
+    } catch (error) {
+      alert('Gagal melakukan aksi: ' + error.message);
+    }
+  };
+
+  const renderCard = (card, hidden = false) => {
+    if (hidden) {
+      return (
+        <div className="w-16 h-24 bg-blue-600 border-2 border-blue-800 rounded-lg flex items-center justify-center shadow-lg">
+          <div className="text-white text-2xl">🂠</div>
+        </div>
+      );
+    }
+
+    const isRed = card.suit === '♥' || card.suit === '♦';
+    return (
+      <div className={`w-16 h-24 bg-white border-2 border-gray-800 rounded-lg flex flex-col items-center justify-center shadow-lg ${isRed ? 'text-red-600' : 'text-black'}`}>
+        <div className="text-2xl font-bold">{card.rank}</div>
+        <div className="text-3xl">{card.suit}</div>
+      </div>
+    );
+  };
+
+  if (screen === 'home') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-green-800 to-green-900 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full">
+          <h1 className="text-4xl font-bold text-center mb-2 text-green-800">♠♥ Poker ♦♣</h1>
+          <p className="text-center text-gray-600 mb-6">Texas Hold'em - 4 Players</p>
+          
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Nama Anda</label>
+            <input
+              type="text"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value)}
+              className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              placeholder="Masukkan nama..."
+            />
+          </div>
+
+          <button
+            onClick={createRoom}
+            className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg mb-4 flex items-center justify-center gap-2 transition"
+          >
+            <Plus size={20} />
+            Buat Room Baru
+          </button>
+
+          <div className="flex items-center gap-2 mb-4">
+            <div className="flex-1 h-px bg-gray-300"></div>
+            <span className="text-gray-500 text-sm">ATAU</span>
+            <div className="flex-1 h-px bg-gray-300"></div>
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Kode Room</label>
+            <input
+              type="text"
+              value={roomCode}
+              onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+              className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="Masukkan kode..."
+              maxLength={6}
+            />
+          </div>
+
+          <button
+            onClick={joinRoom}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition"
+          >
+            <LogIn size={20} />
+            Join Room
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (screen === 'game' && gameState) {
+    const currentPlayer = gameState.players.find(p => p.id === playerId);
+    const isMyTurn = gameState.players[gameState.currentTurn]?.id === playerId;
+    const maxBet = Math.max(...gameState.players.map(p => p.bet));
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-green-800 to-green-900 p-4">
+        <div className="max-w-6xl mx-auto">
+          {/* Header */}
+          <div className="bg-white rounded-lg shadow-lg p-4 mb-4 flex justify-between items-center">
+            <div>
+              <h2 className="text-2xl font-bold text-green-800">Room: {roomCode}</h2>
+              <p className="text-sm text-gray-600">Pemain: {gameState.players.length}/4</p>
+            </div>
+            <div className="text-right">
+              <div className="text-sm text-gray-600">Pot</div>
+              <div className="text-2xl font-bold text-yellow-600 flex items-center gap-1">
+                <DollarSign size={24} />
+                {gameState.pot}
+              </div>
+            </div>
+          </div>
+
+          {/* Waiting Screen */}
+          {!gameState.gameStarted && (
+            <div className="bg-white rounded-lg shadow-lg p-8 mb-4 text-center">
+              <Users size={48} className="mx-auto mb-4 text-green-600" />
+              <h3 className="text-xl font-bold mb-4">Menunggu Pemain...</h3>
+              <div className="space-y-2 mb-6">
+                {gameState.players.map((p, i) => (
+                  <div key={i} className="flex items-center justify-center gap-2">
+                    <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                    <span className="font-medium">{p.name}</span>
+                    {p.isDealer && <span className="text-xs bg-yellow-200 px-2 py-1 rounded">Dealer</span>}
+                  </div>
+                ))}
+              </div>
+              {currentPlayer?.isDealer && gameState.players.length >= 2 && (
+                <button
+                  onClick={startGame}
+                  className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-lg"
+                >
+                  Mulai Game
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Game Area */}
+          {gameState.gameStarted && (
+            <>
+              {/* Community Cards */}
+              <div className="bg-green-700 rounded-lg shadow-lg p-6 mb-4">
+                <div className="text-center mb-4">
+                  <span className="bg-white px-4 py-2 rounded-full text-sm font-bold">
+                    {gameState.round.toUpperCase()}
+                  </span>
+                </div>
+                <div className="flex gap-3 justify-center">
+                  {gameState.communityCards.map((card, i) => (
+                    <div key={i}>{renderCard(card)}</div>
+                  ))}
+                  {[...Array(5 - gameState.communityCards.length)].map((_, i) => (
+                    <div key={`empty-${i}`} className="w-16 h-24 border-2 border-dashed border-white/30 rounded-lg"></div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Players */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+                {gameState.players.map((player, i) => (
+                  <div
+                    key={player.id}
+                    className={`bg-white rounded-lg shadow-lg p-4 ${
+                      gameState.currentTurn === i ? 'ring-4 ring-yellow-400' : ''
+                    } ${player.folded ? 'opacity-50' : ''}`}
+                  >
+                    <div className="font-bold mb-2 flex justify-between items-center">
+                      <span>{player.name}</span>
+                      {gameState.currentTurn === i && <span className="text-xs bg-yellow-400 px-2 py-1 rounded">TURN</span>}
+                    </div>
+                    <div className="text-sm text-gray-600 mb-2">
+                      <DollarSign size={14} className="inline" />{player.chips}
+                    </div>
+                    <div className="flex gap-2 mb-2">
+                      {player.id === playerId ? (
+                        player.cards.map((card, j) => <div key={j}>{renderCard(card)}</div>)
+                      ) : (
+                        <>
+                          {renderCard({}, true)}
+                          {renderCard({}, true)}
+                        </>
+                      )}
+                    </div>
+                    {player.bet > 0 && (
+                      <div className="text-sm font-bold text-yellow-600">
+                        Bet: ${player.bet}
+                      </div>
+                    )}
+                    {player.folded && (
+                      <div className="text-sm font-bold text-red-600">FOLD</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Actions */}
+              {isMyTurn && !currentPlayer.folded && (
+                <div className="bg-white rounded-lg shadow-lg p-6">
+                  <h3 className="text-lg font-bold mb-4">Giliran Anda!</h3>
+                  <div className="flex flex-wrap gap-3 mb-4">
+                    <button
+                      onClick={() => performAction('fold')}
+                      className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-6 rounded-lg"
+                    >
+                      Fold
+                    </button>
+                    <button
+                      onClick={() => performAction('check')}
+                      className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-6 rounded-lg"
+                      disabled={currentPlayer.bet < maxBet}
+                    >
+                      Check
+                    </button>
+                    <button
+                      onClick={() => performAction('call')}
+                      className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg"
+                      disabled={currentPlayer.bet >= maxBet}
+                    >
+                      Call ${maxBet - currentPlayer.bet}
+                    </button>
+                  </div>
+                  <div className="flex gap-3">
+                    <input
+                      type="number"
+                      value={betAmount}
+                      onChange={(e) => setBetAmount(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="flex-1 px-4 py-2 border-2 border-gray-300 rounded-lg"
+                      placeholder="Raise amount..."
+                      min="0"
+                    />
+                    <button
+                      onClick={() => performAction('raise')}
+                      className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg"
+                      disabled={betAmount <= 0}
+                    >
+                      Raise
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+};
+
+export default PokerGame;
